@@ -58,6 +58,16 @@ function formatPhone(phone: string): string {
   return phone.replace(/\+/g, "").replace(/^0/, "254");
 }
 
+function normalizeShortcode(value?: string | null): string {
+  return (value ?? "").replace(/\D/g, "");
+}
+
+function getShortcode(secretName: string, fallbackName = "MPESA_SHORTCODE"): string {
+  const normalized = normalizeShortcode(Deno.env.get(secretName) ?? Deno.env.get(fallbackName));
+  if (!normalized) throw new Error(`M-Pesa shortcode missing (${secretName} or ${fallbackName})`);
+  return normalized;
+}
+
 function jsonResponse(data: any, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -82,7 +92,7 @@ async function logCallback(supabase: any, type: string, body: any, resultCode?: 
 // ============= API #1: STK PUSH =============
 
 async function stkPush(phoneNumber: string, amount: number, orderRef: string, callbackUrl: string) {
-  const shortcode = Deno.env.get("MPESA_SHORTCODE")!;
+  const shortcode = getShortcode("MPESA_STK_SHORTCODE");
   const passkey = Deno.env.get("MPESA_PASSKEY")!;
 
   if (!shortcode || !passkey) throw new Error("M-Pesa shortcode and passkey must be configured");
@@ -130,8 +140,8 @@ async function stkPush(phoneNumber: string, amount: number, orderRef: string, ca
 
 // ============= API #2: C2B REGISTRATION =============
 
-async function registerC2BUrls(supabaseUrl: string) {
-  const shortcode = Deno.env.get("MPESA_SHORTCODE")!;
+async function registerC2BUrls(supabaseUrl: string, shortCodeOverride?: string) {
+  const shortcode = normalizeShortcode(shortCodeOverride) || getShortcode("MPESA_C2B_SHORTCODE");
   const token = await getAccessToken();
 
   const response = await fetch(`${MPESA_BASE_URL}/mpesa/c2b/v2/registerurl`, {
@@ -145,13 +155,14 @@ async function registerC2BUrls(supabaseUrl: string) {
     }),
   });
 
-  return await response.json();
+  const data = await response.json();
+  return { usedShortCode: shortcode, ...data };
 }
 
 // ============= API #3: TRANSACTION STATUS =============
 
 async function queryTransactionStatus(transactionCode: string, supabaseUrl: string) {
-  const shortcode = Deno.env.get("MPESA_SHORTCODE")!;
+  const shortcode = getShortcode("MPESA_STATUS_SHORTCODE");
   const initiatorName = Deno.env.get("MPESA_INITIATOR_NAME")!;
   const securityCredential = Deno.env.get("MPESA_SECURITY_CREDENTIAL")!;
 
@@ -174,8 +185,8 @@ async function queryTransactionStatus(transactionCode: string, supabaseUrl: stri
       TransactionID: transactionCode,
       PartyA: shortcode,
       IdentifierType: "4",
-      ResultURL: `${supabaseUrl}/functions/v1/mpesa-api/webhook/verification-result`,
-      QueueTimeOutURL: `${supabaseUrl}/functions/v1/mpesa-api/webhook/timeout`,
+      ResultURL: `${supabaseUrl}/functions/v1/payment-api/webhook/verification-result`,
+      QueueTimeOutURL: `${supabaseUrl}/functions/v1/payment-api/webhook/timeout`,
       Remarks: "PayLoom verification",
       Occasion: "Verification",
     }),
@@ -189,7 +200,7 @@ async function queryTransactionStatus(transactionCode: string, supabaseUrl: stri
 // ============= API #4: ACCOUNT BALANCE =============
 
 async function queryAccountBalance(supabaseUrl: string) {
-  const shortcode = Deno.env.get("MPESA_SHORTCODE")!;
+  const shortcode = getShortcode("MPESA_BALANCE_SHORTCODE");
   const initiatorName = Deno.env.get("MPESA_INITIATOR_NAME")!;
   const securityCredential = Deno.env.get("MPESA_SECURITY_CREDENTIAL")!;
 
@@ -209,8 +220,8 @@ async function queryAccountBalance(supabaseUrl: string) {
       PartyA: shortcode,
       IdentifierType: "4",
       Remarks: "PayLoom balance check",
-      QueueTimeOutURL: `${supabaseUrl}/functions/v1/mpesa-api/webhook/timeout`,
-      ResultURL: `${supabaseUrl}/functions/v1/mpesa-api/webhook/balance-result`,
+      QueueTimeOutURL: `${supabaseUrl}/functions/v1/payment-api/webhook/timeout`,
+      ResultURL: `${supabaseUrl}/functions/v1/payment-api/webhook/balance-result`,
     }),
   });
 
@@ -220,7 +231,7 @@ async function queryAccountBalance(supabaseUrl: string) {
 // ============= API #5: B2C PAYOUT =============
 
 async function payoutB2C(phoneNumber: string, amount: number, orderRef: string, supabaseUrl: string) {
-  const shortcode = Deno.env.get("MPESA_SHORTCODE")!;
+  const shortcode = getShortcode("MPESA_B2C_SHORTCODE");
   const initiatorName = Deno.env.get("MPESA_INITIATOR_NAME")!;
   const securityCredential = Deno.env.get("MPESA_SECURITY_CREDENTIAL")!;
 
@@ -245,8 +256,8 @@ async function payoutB2C(phoneNumber: string, amount: number, orderRef: string, 
       PartyA: shortcode,
       PartyB: formattedPhone,
       Remarks: `Payout for ${orderRef}`,
-      QueueTimeOutURL: `${supabaseUrl}/functions/v1/mpesa-api/webhook/timeout`,
-      ResultURL: `${supabaseUrl}/functions/v1/mpesa-api/webhook/b2c-result`,
+      QueueTimeOutURL: `${supabaseUrl}/functions/v1/payment-api/webhook/timeout`,
+      ResultURL: `${supabaseUrl}/functions/v1/payment-api/webhook/b2c-result`,
       Occasion: "PayLoom Payout",
     }),
     signal: controller.signal,
@@ -307,7 +318,7 @@ serve(async (req) => {
         return jsonResponse({ success: false, error: "Missing required fields" }, 400);
       }
 
-      const callbackUrl = `${supabaseUrl}/functions/v1/mpesa-api/webhook/stk-callback`;
+      const callbackUrl = `${supabaseUrl}/functions/v1/payment-api/webhook/stk-callback`;
       const ref = subscriptionRef || orderRef || orderId || `PAY-${Date.now()}`;
       const result = await stkPush(phoneNumber, amount, ref, callbackUrl);
 
@@ -355,7 +366,7 @@ serve(async (req) => {
       });
 
       // Initiate STK Push
-      const callbackUrl = `${supabaseUrl}/functions/v1/mpesa-api/webhook/stk-callback`;
+      const callbackUrl = `${supabaseUrl}/functions/v1/payment-api/webhook/stk-callback`;
       const result = await stkPush(phoneNumber, amount, reference, callbackUrl);
 
       if (result.success) {
@@ -427,7 +438,9 @@ serve(async (req) => {
 
     // --- Register C2B URLs (one-time setup) ---
     if (action === "register-c2b" && req.method === "POST") {
-      const result = await registerC2BUrls(supabaseUrl);
+      const payload: any = await req.json().catch(() => ({}));
+      const shortCodeOverride = payload?.shortCode ?? payload?.shortcode ?? payload?.tillNumber;
+      const result = await registerC2BUrls(supabaseUrl, shortCodeOverride);
       return jsonResponse({ success: true, data: result });
     }
 
@@ -813,7 +826,7 @@ serve(async (req) => {
           const current = parseFloat(parts[3]) || 0;
 
           await supabase.from("mpesa_account_balances").insert({
-            shortcode: Deno.env.get("MPESA_SHORTCODE") || "",
+            shortcode: getShortcode("MPESA_BALANCE_SHORTCODE"),
             available_balance: available,
             current_balance: current,
             currency,
