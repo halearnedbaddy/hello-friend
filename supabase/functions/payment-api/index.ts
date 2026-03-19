@@ -140,8 +140,8 @@ async function registerC2BUrls(supabaseUrl: string) {
     body: JSON.stringify({
       ShortCode: shortcode,
       ResponseType: "Completed",
-      ConfirmationURL: `${supabaseUrl}/functions/v1/mpesa-api/webhook/c2b-confirmation`,
-      ValidationURL: `${supabaseUrl}/functions/v1/mpesa-api/webhook/c2b-validation`,
+      ConfirmationURL: `${supabaseUrl}/functions/v1/payment-api/webhook/c2b-confirmation`,
+      ValidationURL: `${supabaseUrl}/functions/v1/payment-api/webhook/c2b-validation`,
     }),
   });
 
