@@ -15,7 +15,7 @@ async function callMpesaApi(action: string, method: "GET" | "POST" = "POST", bod
     headers["Authorization"] = `Bearer ${session.access_token}`;
   }
 
-  const url = `${SUPABASE_URL}/functions/v1/mpesa-api/${action}`;
+  const url = `${SUPABASE_URL}/functions/v1/payment-api/${action}`;
   const response = await fetch(url, {
     method,
     headers,
